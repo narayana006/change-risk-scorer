@@ -1,0 +1,92 @@
+name: Change risk scorer
+description: Score the risk of a pull request or push by what it touches, its size and when it ships, with reasons.
+author: Narayana Vemburaj
+branding:
+  icon: alert-triangle
+  color: orange
+
+inputs:
+  base:
+    description: Ref the change merges into. Defaults to the pull request base branch, or HEAD~1 on other events.
+    required: false
+    default: ""
+  head:
+    description: Ref to score.
+    required: false
+    default: HEAD
+  config:
+    description: Path to a YAML or JSON config. Defaults to .change-risk.yml in the repository if present.
+    required: false
+    default: ""
+  fail-on:
+    description: Fail the step when the level is this or worse (medium, high, critical or never).
+    required: false
+    default: never
+  comment:
+    description: Set to "true" to post the report as a pull request comment (needs pull-requests write permission).
+    required: false
+    default: "false"
+  token:
+    description: Token used to post the comment.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  score:
+    description: Risk score from 0 to 100.
+    value: ${{ steps.score.outputs.score }}
+  level:
+    description: low, medium, high or critical.
+    value: ${{ steps.score.outputs.level }}
+  report:
+    description: Path to the Markdown report file.
+    value: ${{ steps.score.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install change-risk-scorer
+      shell: bash
+      run: python -m pip install --quiet "$GITHUB_ACTION_PATH"
+    - name: Score the change
+      id: score
+      shell: bash
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_HEAD: ${{ inputs.head }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        base="$INPUT_BASE"
+        if [ -z "$base" ]; then
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then base="origin/$GITHUB_BASE_REF"; else base="HEAD~1"; fi
+        fi
+        args=(--base "$base" --head "$INPUT_HEAD" --now "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)")
+        if [ -n "$INPUT_CONFIG" ]; then args+=(--config "$INPUT_CONFIG"); fi
+        report="$RUNNER_TEMP/change-risk.md"
+        change-risk-scorer "${args[@]}" --format json > "$RUNNER_TEMP/change-risk.json"
+        status=0
+        change-risk-scorer "${args[@]}" --format markdown --output "$report" --fail-on "$INPUT_FAIL_ON" || status=$?
+        if [ "$status" -gt 1 ]; then exit "$status"; fi
+        cat "$report" >> "$GITHUB_STEP_SUMMARY"
+        python -c 'import json,sys; d=json.load(open(sys.argv[1])); print("score=%d\nlevel=%s" % (d["score"], d["level"]))' \
+          "$RUNNER_TEMP/change-risk.json" >> "$GITHUB_OUTPUT"
+        echo "report=$report" >> "$GITHUB_OUTPUT"
+        echo "exit_status=$status" >> "$GITHUB_OUTPUT"
+    - name: Post pull request comment
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPORT: ${{ steps.score.outputs.report }}
+      run: gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$REPORT"
+    - name: Apply fail-on
+      if: steps.score.outputs.exit_status == '1'
+      shell: bash
+      run: |
+        echo "Change risk level is at or above the fail-on level."
+        exit 1
