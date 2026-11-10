@@ -1,0 +1,43 @@
+# Example configuration for change-risk-scorer.
+# Copy to .change-risk.yml in the root of your repository and adjust.
+
+# Zone used for freeze windows, business hours and --now values without an offset.
+timezone: America/New_York
+
+# Changes shipped outside these hours score extra points.
+business_hours:
+  start: "09:00"
+  end: "17:00"
+  days: [mon, tue, wed, thu, fri]
+  points: 10
+
+freeze_windows:
+  # A dated window: start and end are local times in the zone above.
+  - name: Thanksgiving week change freeze
+    start: "2026-11-25T00:00"
+    end: "2026-11-30T09:00"
+    points: 40
+  # A weekly window.
+  - name: Friday afternoon
+    days: [fri]
+    start_time: "15:00"
+    end_time: "23:59"
+    points: 15
+
+# Extra path rules, checked before the built-in ones.
+# "*" matches any characters including "/".
+paths:
+  - name: Payments service
+    patterns: ["services/payments/*"]
+    points: 20
+    reason: handles money; needs a second reviewer
+
+# Directories whose children are separate services, for blast radius.
+services:
+  roots: [services]
+
+# Score needed for each level. Below "medium" is low.
+thresholds:
+  medium: 25
+  high: 50
+  critical: 75
